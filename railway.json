@@ -1,0 +1,31 @@
+{
+  "name": "fanz-marketing-bot",
+  "description": "Fanz Sdn Bhd Marketing Content Generator Bot",
+  "logo": "https://fanz.com.my/favicon.ico",
+  "repository": "https://github.com/your-repo/fanz-marketing-bot",
+  "keywords": ["telegram", "bot", "marketing", "fanz"],
+  "env": {
+    "TELEGRAM_TOKEN": {
+      "description": "Telegram Bot Token from @BotFather",
+      "required": true
+    },
+    "OPENROUTER_API_KEY": {
+      "description": "OpenRouter API Key",
+      "required": true
+    },
+    "MODEL": {
+      "description": "OpenRouter model to use (default: gpt-4o)",
+      "required": false
+    },
+    "GEMINI_API_KEY": {
+      "description": "Google Gemini API key for Nano Banana image generation",
+      "required": true
+    },
+    "GEMINI_MODEL": {
+      "description": "Gemini model for image generation (default: gemini-2.5-flash-image)",
+      "required": false
+    }
+  },
+  "buildCommand": "npm install",
+  "startCommand": "node index.js"
+}

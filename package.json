@@ -1,0 +1,12 @@
+{
+  "name": "fanz-marketing-bot",
+  "version": "1.0.0",
+  "description": "Marketing content generator bot for Fanz Sdn Bhd",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
