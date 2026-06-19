@@ -2,6 +2,49 @@ const TelegramBot = require('node-telegram-bot-api');
 const { brand, products } = require('./products');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+
+// ============================================
+// VERSION / GIT COMMIT SHA
+// ============================================
+const VERSION_FILE = path.join(__dirname, 'version.txt');
+
+function resolveCommitSha() {
+  // 1. Railway provides this automatically at deploy time
+  const fromEnv = process.env.RAILWAY_GIT_COMMIT_SHA;
+  if (fromEnv && fromEnv.trim()) {
+    return fromEnv.trim();
+  }
+  // 2. Read .git/HEAD (handles both detached SHA and ref pointer)
+  try {
+    const headPath = path.join(__dirname, '.git', 'HEAD');
+    const head = fs.readFileSync(headPath, 'utf8').trim();
+    if (head.startsWith('ref: ')) {
+      const refPath = path.join(__dirname, '.git', head.slice(5).trim());
+      const sha = fs.readFileSync(refPath, 'utf8').trim();
+      if (sha) return sha;
+    } else if (head) {
+      return head;
+    }
+  } catch (_) {
+    // .git not available (e.g., shipped Docker image without git dir)
+  }
+  // 3. Fallback to an existing version.txt baked into the image
+  try {
+    const cached = fs.readFileSync(VERSION_FILE, 'utf8').trim();
+    if (cached) return cached;
+  } catch (_) {
+    // no cached file either
+  }
+  return 'unknown';
+}
+
+const COMMIT_SHA = resolveCommitSha();
+try {
+  fs.writeFileSync(VERSION_FILE, COMMIT_SHA + '\n');
+} catch (err) {
+  console.error('Could not write version.txt:', err.message);
+}
 
 // ============================================
 // CONFIG
@@ -328,7 +371,31 @@ function parsePlanResponse(rawText) {
 // ============================================
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-console.log(`Fanz Marketing Bot started. Model: ${MODEL}`);
+console.log(`Fanz Marketing Bot started. Model: ${MODEL}. Commit: ${COMMIT_SHA}`);
+
+// ============================================
+// HTTP SERVER (Railway health + version probe)
+// ============================================
+const HTTP_PORT = process.env.PORT || 8080;
+
+const httpServer = http.createServer((req, res) => {
+  if (req.url === '/version') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(COMMIT_SHA);
+    return;
+  }
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('OK');
+    return;
+  }
+  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('Not Found');
+});
+
+httpServer.listen(HTTP_PORT, () => {
+  console.log(`HTTP server listening on :${HTTP_PORT} (commit=${COMMIT_SHA})`);
+});
 
 // ============================================
 // COMMANDS
@@ -657,11 +724,13 @@ async function sendWithSplit(chatId, text, options) {
 process.on('SIGINT', () => {
   console.log('\nShutting down...');
   bot.stopPolling();
+  httpServer.close();
   process.exit(0);
 });
 
 process.on('SIGTERM', () => {
   console.log('\nShutting down...');
   bot.stopPolling();
+  httpServer.close();
   process.exit(0);
 });
