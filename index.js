@@ -6,6 +6,7 @@ const http = require('http');
 const supabase = require('./lib/supabase');
 const { buildPlanSystemPrompt, parsePlanResponse, validateSelection, createSelectionPayload } = require('./lib/planning');
 const { buildCopywritingPrompt, parseCopywritingResponse, validateCopywritingResult } = require('./lib/copywriting');
+const { publishToSocial } = require('./lib/publish');
 
 // ============================================
 // VERSION / GIT COMMIT SHA
@@ -744,7 +745,11 @@ bot.on('callback_query', async (cb) => {
       await bot.editMessageText(originalText + '\n\n✅ Approved', {
         chat_id: chatId,
         message_id: messageId,
-        reply_markup: { inline_keyboard: [] },
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🚀 Publish', callback_data: `publish_go:${rowId}` }],
+          ],
+        },
       });
     } catch (err) {
       console.error('approve callback error:', err);
@@ -770,6 +775,49 @@ bot.on('callback_query', async (cb) => {
       console.error('reject callback error:', err);
       try {
         await bot.answerCallbackQuery(cb.id, { text: 'Operation failed. Please try again.' });
+      } catch (_) {}
+    }
+    return;
+  }
+
+  if (data.startsWith('publish_go:')) {
+    const rowId = data.slice('publish_go:'.length);
+    try {
+      // Read current row
+      const row = await supabase.getContentCalendar(rowId);
+      if (!row) {
+        await bot.answerCallbackQuery(cb.id, { text: 'Row not found.' });
+        return;
+      }
+      // Idempotency check: already published?
+      if (row.post_id) {
+        await bot.answerCallbackQuery(cb.id, { text: `Already published: ${row.post_id}` });
+        return;
+      }
+      // Status check
+      if (row.status !== 'approved') {
+        await bot.answerCallbackQuery(cb.id, { text: `Cannot publish — status is "${row.status}"` });
+        return;
+      }
+      // Execute publish
+      const result = await publishToSocial(row);
+      // Update DB
+      await supabase.updateContentCalendar(rowId, { post_id: result.post_id, status: 'published' });
+      // Edit message
+      const originalText = (message && message.text) || '';
+      const suffix = result.dry_run
+        ? `\n\n🚀 Published (dry-run: \`${result.post_id}\`)`
+        : `\n\n🚀 Published: \`${result.post_id}\``;
+      await bot.editMessageText(originalText + suffix, {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: [] },
+      });
+      await bot.answerCallbackQuery(cb.id, { text: result.dry_run ? 'Published (dry-run)' : 'Published!' });
+    } catch (err) {
+      console.error('publish callback error:', err);
+      try {
+        await bot.answerCallbackQuery(cb.id, { text: 'Publish failed. Please try again.' });
       } catch (_) {}
     }
     return;
