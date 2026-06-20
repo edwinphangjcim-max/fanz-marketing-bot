@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const supabase = require('./lib/supabase');
+const { buildPlanSystemPrompt, parsePlanResponse } = require('./lib/planning');
 
 // ============================================
 // VERSION / GIT COMMIT SHA
@@ -160,90 +161,6 @@ IMPORTANT RULES:
 - Mix Chinese and English naturally, like a real Malaysian social media post
 - Each post should feel unique, not a template`;
 
-// Content planning prompt (new — for /plan)
-function buildPlanSystemPrompt() {
-  const now = new Date();
-  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const currentMonth = months[now.getMonth()];
-  const currentYear = now.getFullYear();
-  const currentDate = `${currentMonth} ${now.getDate()}, ${currentYear}`;
-
-  // Festival proximity detection — build dynamic context
-  const festivals = [
-    { name: 'Chinese New Year (农历新年)', range: 'Jan-Feb', triggerMonths: [0, 1] },
-    { name: 'Hari Raya Aidilfitri (开斋节)', range: 'March-April', triggerMonths: [2, 3] },
-    { name: 'Deepavali (屠妖节)', range: 'Oct-Nov', triggerMonths: [9, 10] },
-    { name: 'Christmas (圣诞节)', range: 'December', triggerMonths: [11] },
-    { name: 'National Day / Merdeka (国庆)', range: 'August 31', triggerMonths: [7] },
-    { name: 'Malaysia Day (马来西亚日)', range: 'September 16', triggerMonths: [8] },
-    { name: 'Mid-year sales (年中促销)', range: 'June-July', triggerMonths: [5, 6] },
-    { name: 'School holidays (学校假期)', range: 'March, June, December', triggerMonths: [2, 5, 11] },
-    { name: 'Rainy / monsoon season (雨季)', range: 'Nov-Feb', triggerMonths: [10, 11, 0, 1] },
-    { name: 'Hot / dry season (热季)', range: 'March-May', triggerMonths: [2, 3, 4] },
-  ];
-
-  const currentMonthNum = now.getMonth();
-  const nearEvents = festivals.filter(f => f.triggerMonths.includes(currentMonthNum));
-  const nearContext = nearEvents.length > 0
-    ? `\nCURRENT SEASONAL HIGHLIGHTS (currently active / approaching):\n${nearEvents.map(f => `- ${f.name} (${f.range})`).join('\n')}`
-    : '';
-
-  return `You are a senior social media content strategist for Fanz Sdn Bhd, a Malaysian ceiling fan and air cooler brand.
-
-Your job: Suggest 3-5 content topics for the coming week that are relevant, timely, and aligned with the current date in Malaysia.
-
-CURRENT DATE: ${currentDate}${nearContext}
-
-MALAYSIA SEASONAL & CULTURAL CONTEXT (full reference):
-- Hari Raya Aidilfitri (March-April) — home decoration, family gatherings
-- Deepavali (Oct-Nov) — festive lighting, home preparation
-- Chinese New Year (Jan-Feb) — spring cleaning, home upgrades
-- Christmas (Dec) — year-end festive season
-- National Day (Aug 31) — Merdeka campaigns
-- Malaysia Day (Sep 16) — East Malaysia awareness
-- School holidays (March, June, December) — family time at home
-- Rainy season (Nov-Feb) — enclosed spaces, ventilation
-- Hot season (March-May) — peak fan season, heat relief
-- Mid-year sales (June-July) — promotion-friendly period
-- Year-end sales (Nov-Dec) — year-end campaigns
-
-BRAND & PRODUCTS:
-- 10+ years in Malaysia, 10-year motor warranty
-- On-site service across Malaysia & Singapore
-- SIRIM certified, DC motor technology, energy efficient
-- Products: FS Series (smart, large spaces), Grande L (LED light, living/dining), Smart Series (WiFi app control), AURA (compact, bedrooms)
-- We also sell air coolers (pending product expansion details)
-
-YOUR TASK:
-Based on the CURRENT DATE and Malaysia context above, suggest 3-5 content topics for Fanz's social media this week.
-
-For each topic, include:
-1. A catchy title (mixed Chinese-English, like a real Malaysian post)
-2. A one-sentence explanation of why this topic works now
-3. A recommended content direction from exactly one of: product, case, promo, story
-
-Your output MUST follow this exact format — one numbered item per line block with clear separators:
-
-===== 1 =====
-Title: [catchy title]
-Why: [one sentence explaining timeliness/relevance]
-Direction: [product|case|promo|story]
-
-===== 2 =====
-Title: [catchy title]
-Why: [one sentence]
-Direction: [product|case|promo|story]
-
-... and so on up to 5.
-
-IMPORTANT:
-- Do NOT invent holidays or events that don't exist
-- If no major event is near the current date, base suggestions on seasons and general marketing timing
-- Keep suggestions practical for a ceiling fan + air cooler brand
-- Mixed Chinese-English language throughout
-- No post content generation — only topic planning`;
-}
-
 // ============================================
 // OpenRouter API helper (fetch, no SDK)
 // ============================================
@@ -325,74 +242,6 @@ async function generateContent(command, userText) {
   ];
 
   return await callOpenRouter(messages);
-}
-
-// ============================================
-// Parse /plan AI response into structured plans
-// ============================================
-function parsePlanResponse(rawText) {
-  const plans = [];
-  let currentPlan = null;
-
-  const lines = rawText.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Detect new plan block: "===== N =====" or "N." at start
-    const blockMatch = trimmed.match(/^=+\s*(\d+)\s*=+/);
-    const numberMatch = trimmed.match(/^(\d+)[.)]\s*$/);
-
-    if (blockMatch) {
-      // Save previous plan if exists
-      if (currentPlan && currentPlan.number) {
-        plans.push(currentPlan);
-      }
-      currentPlan = { number: parseInt(blockMatch[1]), title: '', description: '', direction: '' };
-      continue;
-    }
-
-    // Detect new plan from numbered list item ("N. Title" or "N) Title")
-    const startMatch = trimmed.match(/^(\d+)[.)]\s+/);
-    if (startMatch) {
-      if (currentPlan && currentPlan.number) {
-        plans.push(currentPlan);
-      }
-      currentPlan = { number: parseInt(startMatch[1]), title: trimmed.replace(/^\d+[.)]\s*/, ''), description: '', direction: '' };
-      continue;
-    }
-
-    if (!currentPlan) continue;
-
-    // Parse fields within a plan block
-    const titleMatch = trimmed.match(/^Title:\s*(.+)/i);
-    const whyMatch = trimmed.match(/^Why:\s*(.+)/i);
-    const directionMatch = trimmed.match(/^Direction:\s*(.+)/i);
-
-    if (titleMatch) {
-      currentPlan.title = titleMatch[1].trim();
-    } else if (whyMatch) {
-      currentPlan.description = whyMatch[1].trim();
-    } else if (directionMatch) {
-      const dir = directionMatch[1].trim().toLowerCase();
-      if (['product', 'case', 'promo', 'story'].includes(dir)) {
-        currentPlan.direction = dir;
-      } else {
-        currentPlan.direction = 'product'; // default fallback
-      }
-    } else if (trimmed && !trimmed.startsWith('===') && !trimmed.startsWith('Title') && !trimmed.startsWith('Why') && !trimmed.startsWith('Direction')) {
-      // Free text — could be part of title if title is empty
-      if (!currentPlan.title && trimmed.length > 1) {
-        currentPlan.title = trimmed;
-      }
-    }
-  }
-
-  // Don't forget the last plan
-  if (currentPlan && currentPlan.number && currentPlan.title) {
-    plans.push(currentPlan);
-  }
-
-  return plans;
 }
 
 // ============================================
