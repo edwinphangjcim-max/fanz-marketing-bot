@@ -166,14 +166,35 @@ function buildPlanSystemPrompt() {
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const currentMonth = months[now.getMonth()];
   const currentYear = now.getFullYear();
+  const currentDate = `${currentMonth} ${now.getDate()}, ${currentYear}`;
+
+  // Festival proximity detection — build dynamic context
+  const festivals = [
+    { name: 'Chinese New Year (农历新年)', range: 'Jan-Feb', triggerMonths: [0, 1] },
+    { name: 'Hari Raya Aidilfitri (开斋节)', range: 'March-April', triggerMonths: [2, 3] },
+    { name: 'Deepavali (屠妖节)', range: 'Oct-Nov', triggerMonths: [9, 10] },
+    { name: 'Christmas (圣诞节)', range: 'December', triggerMonths: [11] },
+    { name: 'National Day / Merdeka (国庆)', range: 'August 31', triggerMonths: [7] },
+    { name: 'Malaysia Day (马来西亚日)', range: 'September 16', triggerMonths: [8] },
+    { name: 'Mid-year sales (年中促销)', range: 'June-July', triggerMonths: [5, 6] },
+    { name: 'School holidays (学校假期)', range: 'March, June, December', triggerMonths: [2, 5, 11] },
+    { name: 'Rainy / monsoon season (雨季)', range: 'Nov-Feb', triggerMonths: [10, 11, 0, 1] },
+    { name: 'Hot / dry season (热季)', range: 'March-May', triggerMonths: [2, 3, 4] },
+  ];
+
+  const currentMonthNum = now.getMonth();
+  const nearEvents = festivals.filter(f => f.triggerMonths.includes(currentMonthNum));
+  const nearContext = nearEvents.length > 0
+    ? `\nCURRENT SEASONAL HIGHLIGHTS (currently active / approaching):\n${nearEvents.map(f => `- ${f.name} (${f.range})`).join('\n')}`
+    : '';
 
   return `You are a senior social media content strategist for Fanz Sdn Bhd, a Malaysian ceiling fan and air cooler brand.
 
-Your job: Suggest 3-5 content topics for the coming week that are relevant, timely, and aligned with the current month in Malaysia.
+Your job: Suggest 3-5 content topics for the coming week that are relevant, timely, and aligned with the current date in Malaysia.
 
-CURRENT DATE: ${currentMonth} ${currentYear}
+CURRENT DATE: ${currentDate}${nearContext}
 
-MALAYSIA SEASONAL & CULTURAL CONTEXT (use this to guide your suggestions):
+MALAYSIA SEASONAL & CULTURAL CONTEXT (full reference):
 - Hari Raya Aidilfitri (March-April) — home decoration, family gatherings
 - Deepavali (Oct-Nov) — festive lighting, home preparation
 - Chinese New Year (Jan-Feb) — spring cleaning, home upgrades
@@ -330,16 +351,14 @@ function parsePlanResponse(rawText) {
       continue;
     }
 
-    if (!currentPlan) {
-      // If we haven't started a block yet, check if line starts with number
-      const startMatch = trimmed.match(/^(\d+)[.)]\s+/);
-      if (startMatch) {
-        if (currentPlan && currentPlan.number) {
-          plans.push(currentPlan);
-        }
-        currentPlan = { number: parseInt(startMatch[1]), title: trimmed.replace(/^\d+[.)]\s*/, ''), description: '', direction: '' };
-        continue;
+    // Detect new plan from numbered list item ("N. Title" or "N) Title")
+    const startMatch = trimmed.match(/^(\d+)[.)]\s+/);
+    if (startMatch) {
+      if (currentPlan && currentPlan.number) {
+        plans.push(currentPlan);
       }
+      currentPlan = { number: parseInt(startMatch[1]), title: trimmed.replace(/^\d+[.)]\s*/, ''), description: '', direction: '' };
+      continue;
     }
 
     if (!currentPlan) continue;
