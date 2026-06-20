@@ -3,6 +3,7 @@ const { brand, products } = require('./products');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const supabase = require('./lib/supabase');
 
 // ============================================
 // VERSION / GIT COMMIT SHA
@@ -60,6 +61,15 @@ const PLAN_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
 if (!TELEGRAM_TOKEN || !OPENROUTER_API_KEY) {
   console.error('Missing TELEGRAM_TOKEN or OPENROUTER_API_KEY');
   process.exit(1);
+}
+
+if (supabase.isConfigured()) {
+  console.log('Supabase connected: service_role key loaded');
+} else {
+  console.warn(
+    'Supabase NOT configured — SUPABASE_URL and SUPABASE_SERVICE_KEY missing. ' +
+      'content_calendar persistence is disabled.'
+  );
 }
 
 // ============================================

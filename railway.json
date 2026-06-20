@@ -24,6 +24,14 @@
     "GEMINI_MODEL": {
       "description": "Gemini model for image generation (default: gemini-2.5-flash-image)",
       "required": false
+    },
+    "SUPABASE_URL": {
+      "description": "Supabase project URL (e.g. https://xxx.supabase.co) for content_calendar persistence",
+      "required": false
+    },
+    "SUPABASE_SERVICE_KEY": {
+      "description": "Supabase service_role key — full read/write access to content_calendar",
+      "required": false
     }
   },
   "buildCommand": "npm install",
