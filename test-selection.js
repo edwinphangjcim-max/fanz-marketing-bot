@@ -13,6 +13,7 @@
 // ============================================
 
 const path = require('path');
+const { findPlanByNumber, validateSelection, createSelectionPayload } = require('./lib/planning');
 
 let passed = 0;
 let failed = 0;
@@ -51,59 +52,6 @@ function assertThrows(fn, name, expectedSubstr) {
 // ============================================
 function createSession(plans) {
   return { plans, timestamp: Date.now() };
-}
-
-// ============================================
-// Selection logic — extracted for testability
-// ============================================
-
-/**
- * Find a plan by number in the session.
- * Returns the plan object or null if not found.
- */
-function findPlanByNumber(session, num) {
-  if (!session || !Array.isArray(session.plans)) return null;
-  return session.plans.find(p => p.number === num) || null;
-}
-
-/**
- * Validate selection input.
- * Returns { valid: true, plan } or { valid: false, message }.
- */
-function validateSelection(session, rawText) {
-  // No session
-  if (!session) {
-    return { valid: false, message: 'Session expired or not found. Please send /plan to start over.' };
-  }
-
-  // Not a number
-  if (!/^\d+$/.test(rawText)) {
-    return { valid: false, message: 'Please reply with a number only.' };
-  }
-
-  const num = parseInt(rawText, 10);
-  const plan = findPlanByNumber(session, num);
-
-  if (!plan) {
-    const range = `1-${session.plans.length}`;
-    return { valid: false, message: `Please reply with a number between ${range}. Or send /plan to start over.` };
-  }
-
-  return { valid: true, plan, number: num };
-}
-
-/**
- * Check if a plan was already selected (idempotency check).
- * In production this checks the most recent content_calendar row.
- * This mock version uses a Set of selected IDs.
- */
-function createSelectionPayload(plan, chatId) {
-  return {
-    chat_id: String(chatId),
-    pillar: plan.direction,
-    topic: plan.title,
-    status: 'selected',
-  };
 }
 
 // ============================================

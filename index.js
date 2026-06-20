@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const supabase = require('./lib/supabase');
-const { buildPlanSystemPrompt, parsePlanResponse } = require('./lib/planning');
+const { buildPlanSystemPrompt, parsePlanResponse, validateSelection, createSelectionPayload } = require('./lib/planning');
 
 // ============================================
 // VERSION / GIT COMMIT SHA
@@ -415,60 +415,48 @@ bot.on('message', async (msg) => {
   if (!text) return;
 
   // === PLAN SELECTION INTERCEPT ===
-  // A bare-number reply is interpreted as a plan selection.
-  // Non-numbers fall through to regular message handling below.
-  if (/^\d+$/.test(text)) {
+  if (/^[1-9]\d{0,2}$/.test(text) && getPlanSession(chatId)) {
     const session = getPlanSession(chatId);
-    if (!session) {
-      await bot.sendMessage(chatId, 'Session expired or not found. Please send /plan to start over.');
+    const validation = validateSelection(session, text);
+
+    if (!validation.valid) {
+      await bot.sendMessage(chatId, validation.message);
       return;
     }
 
-    const num = parseInt(text, 10);
-    const plan = session.plans.find(p => p.number === num);
+    const { number: num, plan } = validation;
 
-    if (!plan) {
-      await bot.sendMessage(
-        chatId,
-        `Please reply with a number between 1-${session.plans.length}. Or send /plan to start over.`
+    // Step 1: Generate content FIRST (fail early — no DB side effects)
+    let content;
+    try {
+      content = await generateContent(
+        plan.direction,
+        (plan.title || '') + ' — ' + (plan.description || '')
       );
+    } catch (err) {
+      console.error('plan selection content error:', err);
+      await bot.sendMessage(chatId, `❌ Error generating content: ${err.message}. Please try again.`);
       return;
     }
 
-    // Persist the selection to content_calendar. On failure, keep the session so the user can retry.
+    // Step 2: Persist the selection to content_calendar
     if (supabase.isConfigured()) {
       try {
-        await supabase.createContentCalendar({
-          chat_id: String(chatId),
-          pillar: plan.direction,
-          topic: plan.title,
-          status: 'selected',
-        });
+        await supabase.createContentCalendar(createSelectionPayload(plan, chatId));
       } catch (err) {
         console.error('createContentCalendar error:', err);
-        await bot.sendMessage(
-          chatId,
-          `❌ Could not save selection: ${err.message}. Please try again.`
-        );
-        return;
+        // Don't block content delivery — user already has the content
+        await bot.sendMessage(chatId, `⚠️ Content generated but could not save to database. The post is not scheduled.`);
       }
     } else {
       console.warn('Supabase not configured — skipping content_calendar write for plan selection');
     }
 
-    // Clear session so a repeat of the same number falls into the "session expired" path (idempotent).
+    // Step 3: Clear session (idempotent — repeat same number = session expired)
     clearPlanSession(chatId);
 
     await bot.sendMessage(chatId, `✅ Selected: ${plan.title} (${plan.direction} direction)`);
-    await bot.sendMessage(chatId, 'Now generating content for this topic...');
-
-    try {
-      const content = await generateContent(plan.direction, plan.title + ' — ' + plan.description);
-      await sendWithSplit(chatId, content, { parse_mode: 'Markdown' });
-    } catch (err) {
-      console.error('plan selection content error:', err);
-      await bot.sendMessage(chatId, `❌ Error generating content: ${err.message}. Please try again.`);
-    }
+    await sendWithSplit(chatId, content, { parse_mode: 'Markdown' });
     return;
   }
 
