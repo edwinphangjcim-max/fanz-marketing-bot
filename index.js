@@ -592,12 +592,20 @@ bot.on('message', async (msg) => {
   // is captured rather than swallowed as a command.
   if (awaitingReviewNotes.has(chatId)) {
     const { rowId } = awaitingReviewNotes.get(chatId);
+    const trimmedText = (text || '').trim() || '(no specific notes)';
     try {
-      await supabase.updateContentCalendar(rowId, buildRejectPayload(text));
+      await supabase.updateContentCalendar(rowId, buildRejectPayload(trimmedText));
       awaitingReviewNotes.delete(chatId);
       await bot.sendMessage(
         chatId,
-        '✏️ Revision notes saved. The content has been moved back for revision.'
+        '✏️ Revision notes saved. The content has been moved back for revision.',
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔄 Regenerate with Feedback', callback_data: `redo_copy:${rowId}` }],
+            ],
+          },
+        }
       );
     } catch (err) {
       console.error('review notes save error:', err);
@@ -818,6 +826,75 @@ bot.on('callback_query', async (cb) => {
       console.error('publish callback error:', err);
       try {
         await bot.answerCallbackQuery(cb.id, { text: 'Publish failed. Please try again.' });
+      } catch (_) {}
+    }
+    return;
+  }
+
+  if (data.startsWith('redo_copy:')) {
+    const rowId = data.slice('redo_copy:'.length);
+    try {
+      await bot.answerCallbackQuery(cb.id, { text: 'Regenerating...' });
+
+      const row = await supabase.getContentCalendar(rowId);
+      if (!row) {
+        await bot.answerCallbackQuery(cb.id, { text: 'Row not found.' });
+        return;
+      }
+
+      const topic = row.topic || 'Fanz ceiling fan promotion';
+      const pillar = row.pillar || 'product';
+      const reviewNotes = (row.review_notes || '').trim() || null;
+
+      const copywritingPrompt = buildCopywritingPrompt(topic, pillar, reviewNotes);
+      const copyRaw = await callOpenRouter([
+        { role: 'system', content: copywritingPrompt },
+        { role: 'user', content: 'Generate social media content for this Fanz topic, incorporating the revision feedback.' },
+      ]);
+
+      const parsed = parseCopywritingResponse(copyRaw);
+      if (!parsed) {
+        throw new Error('Failed to parse copywriting response');
+      }
+
+      const validation = validateCopywritingResult(parsed);
+      if (!validation.valid) {
+        throw new Error(`Copywriting validation failed: ${validation.errors.join('; ')}`);
+      }
+
+      await supabase.updateContentCalendar(rowId, {
+        fb_content: parsed.fb_content,
+        ig_content: parsed.ig_content,
+        hashtags: parsed.hashtags,
+        status: 'copy_done',
+      });
+
+      const plan = { title: topic, direction: pillar };
+      const reviewMsg = buildReviewMessage(parsed, plan);
+
+      try {
+        await bot.sendMessage(message.chat.id, reviewMsg, {
+          parse_mode: 'Markdown',
+          reply_markup: buildReviewKeyboard(rowId),
+        });
+        await supabase.updateContentCalendar(rowId, { status: 'pending_review' });
+      } catch (err) {
+        console.error('redo_copy review card send error:', err);
+      }
+
+      await bot.editMessageText(
+        (message.text || '') + '\n\n🔄 Content regenerated with feedback!',
+        {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: { inline_keyboard: [] },
+        }
+      );
+      await bot.answerCallbackQuery(cb.id, { text: 'Regenerated ✓' });
+    } catch (err) {
+      console.error('redo_copy error:', err);
+      try {
+        await bot.answerCallbackQuery(cb.id, { text: 'Regeneration failed. Try again.' });
       } catch (_) {}
     }
     return;
