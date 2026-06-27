@@ -76,17 +76,17 @@ const {
 console.log('--- buildCopywritingPrompt ---');
 
 // Uses actual production date
-const prompt = buildCopywritingPrompt('开斋节家居焕新计划', 'promo');
+const prompt = buildCopywritingPrompt('Hari Raya Home Refresh — Fanz Ceiling Fans', 'promo');
 assert(typeof prompt === 'string', 'prompt is a string');
 assert(prompt.length > 200, 'prompt is sufficiently long');
-assert(prompt.includes('开斋节家居焕新计划'), 'prompt includes topic');
+assert(prompt.includes('Hari Raya Home Refresh'), 'prompt includes topic');
 assert(prompt.includes('promo'), 'prompt includes pillar');
 assert(prompt.includes('Fanz'), 'prompt includes brand name');
 assert(prompt.includes('10-year'), 'prompt includes warranty reference');
 assert(prompt.includes('SIRIM'), 'prompt includes SIRIM reference');
-assert(prompt.includes('Facebook'), 'prompt asks for Facebook version');
-assert(prompt.includes('Instagram'), 'prompt asks for Instagram version');
-assert(prompt.includes('Hashtags'), 'prompt asks for hashtags');
+assert(prompt.includes('FACEBOOK'), 'prompt asks for Facebook version');
+assert(prompt.includes('INSTAGRAM'), 'prompt asks for Instagram version');
+assert(prompt.includes('HASHTAGS'), 'prompt asks for hashtags');
 assert(!prompt.includes('{{'), 'prompt has no template placeholders');
 
 // ============================================
@@ -97,28 +97,30 @@ console.log('\n--- parseCopywritingResponse ---');
 // Valid full output
 const validOutput = `📱 FACEBOOK VERSION
 
-开斋节就要到了，是时候为家里添把好风扇了！Fanz Grande L 系列不仅带 22W LED 灯，还有 56 寸大叶片，客厅饭厅一扇搞定。10 年马达保修，马来西亚家庭的信赖之选。#FanzMalaysia
+Hari Raya is almost here — time to refresh your home! Fanz Grande L Series comes with a 22W LED light and 56" blades, perfect for your living and dining room. 10-year motor warranty. SIRIM certified. On-site service across Malaysia & Singapore.
+
+🌐 https://fanz.my
 
 📸 INSTAGRAM VERSION
 
-✨ 开斋节焕新计划 ✨
-换个新风扇，给家里一个清凉的开斋节！
-Fanz Grande L — 有灯、有风、有颜值
-👍 10 年马达保修
-👍 SIRIM 认证
-👍 上门安装服务
-#FanzMalaysia #开斋节2026
+✨ Hari Raya refresh ✨
+New fan, new energy for your home!
+Fanz Grande L — light, air, and style
+✌️ 10-year motor warranty
+✌️ SIRIM certified
+✌️ On-site installation
+#Fanz #GrandeSeries
 
 #⃣ HASHTAGS
 
-#FanzMalaysia #开斋节 #风扇 #家居 #GrandeL #十年保修 #SIRIM认证 #上门服务 #马来西亚品牌 #节能风扇`;
+#FANZ #Fanz #GrandeSeries #CeilingFan #HariRaya #HomeUpgrade #DCFan #Malaysia`;
 
 const result1 = parseCopywritingResponse(validOutput);
 assert(result1 !== null, 'valid output parsed');
 assert(result1.fb_content && result1.fb_content.length > 20, 'fb_content non-empty');
 assert(result1.ig_content && result1.ig_content.length > 20, 'ig_content non-empty');
 assert(result1.hashtags && result1.hashtags.length > 5, 'hashtags non-empty');
-assert(result1.fb_content.includes('开斋节'), 'fb_content contains topic keyword');
+assert(result1.fb_content.includes('Hari Raya'), 'fb_content contains topic keyword');
 assert(result1.ig_content.includes('Fanz'), 'ig_content contains brand');
 
 // Output missing fields
@@ -147,9 +149,9 @@ console.log('\n--- validateCopywritingResult ---');
 
 // Valid result
 const validResult = {
-  fb_content: '开斋节到了！Fanz 风扇带给你清凉一夏。10年马达保修，上门安装服务，SIRIM认证品质保证。',
-  ig_content: '✨ 开斋节快乐！\nFanz Grande L — 有灯有风\n10年保修 #FanzMalaysia',
-  hashtags: '#FanzMalaysia #开斋节 #风扇 #十年保修 #SIRIM认证',
+  fb_content: 'Hari Raya is here! Fanz fans keep your home cool and comfortable. 10-year motor warranty, on-site installation service, SIRIM certified quality.',
+  ig_content: '✨ Hari Raya blessings! ✨\nFanz Grande L — light, air, and style\n10-year warranty #Fanz #GrandeSeries',
+  hashtags: '#FANZ #Fanz #GrandeSeries #CeilingFan #HariRaya #HomeUpgrade #DCFan #Malaysia',
 };
 
 const v1 = validateCopywritingResult(validResult);
@@ -186,9 +188,9 @@ assert(v4.valid === false, 'curly brace placeholder fails');
 
 // No Fanz keywords
 const noKeywords = {
-  fb_content: '这是一个普通的帖子，没有提到任何品牌特点。',
-  ig_content: '今天天气真好。',
-  hashtags: '#post #random',
+  fb_content: 'This is a generic post about home products with no brand-specific details.',
+  ig_content: 'Today is a beautiful day to relax at home.',
+  hashtags: '#post #random #home',
 };
 const v5 = validateCopywritingResult(noKeywords);
 assert(v5.valid === false, 'no Fanz keywords fails');
@@ -264,8 +266,8 @@ async function callOpenRouter(messages) {
 
 (async () => {
   try {
-    const systemPrompt = buildCopywritingPrompt('开斋节促销：Fanz 风扇家庭优惠', 'promo');
-    const userMsg = 'Generate social media content for this Fanz promotion topic.';
+    const systemPrompt = buildCopywritingPrompt('Hari Raya Promo: Fanz fan family bundle deals', 'promo');
+    const userMsg = 'Generate the post based on this brief: "Hari Raya family promotion with discount offer."';
 
     const messages = [
       { role: 'system', content: systemPrompt },

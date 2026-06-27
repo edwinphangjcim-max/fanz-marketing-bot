@@ -170,56 +170,9 @@ function buildProductContext() {
 // SYSTEM PROMPTS
 // ============================================
 
-// Content execution prompt (existing)
-const SYSTEM_PROMPT = `You are a professional social media marketing copywriter for Fanz Sdn Bhd, a Malaysian fan and air cooler brand.
-
-BRAND VOICE:
-- Professional and trustworthy, with a personal touch
-- Warm and approachable — like a helpful friend who knows their products
-- Natural and authentic — NOT robotic, NOT overly salesy
-- Confident about quality without being arrogant
-- Language: Mixed Chinese and English (马来西亚中英混杂 style, natural like daily conversation)
-
-BRAND IDENTITY:
-- We have been providing quality ceiling fans for over 10 years in Malaysia
-- Our products come with a 10-year motor warranty — this is a major trust signal
-- We offer on-site service across Malaysia & Singapore
-- SIRIM certified — Malaysian quality assurance
-- DC motor technology — energy efficient, quiet, modern
-- Product liability insurance RM 1,000,000
-- We stand behind our products
-
-PRODUCT RANGE:
-- FS Series 563 L: Smart ceiling fan, 56" L-type blades, DC motor, ideal for large living rooms
-- Grande L Series: Ceiling fan with 22W LED light, 56" ABS blades, DC motor, for living & dining rooms
-- Smart Series: WiFi-enabled smart ceiling fan, app control, multi-speed, LED brightness
-- AURA Series: Compact ceiling fan, perfect for small spaces & low ceilings, bedrooms
-
-When given a user request, you must generate social media content in this EXACT format:
-
-📱 FACEBOOK VERSION
-(2-4 sentences, hook + key selling points + CTA, suitable for Facebook audience)
-
-📸 INSTAGRAM VERSION
-(Shorter and more lively, perfect for Instagram. Use line breaks for visual appeal. Include relevant emojis naturally)
-
-#⃣ HASHTAGS (8-12 tags, mix of Chinese and English, include brand hashtag)
-[list 8-12 hashtags, Chinese-English mixed]
-
-🖼️ IMAGE SUGGESTIONS
-(2-3 concrete image ideas for this post)
-
-✅ Boss's mom approved, one-click publish to FB/IG!
-
-IMPORTANT RULES:
-- Always highlight the 10-year warranty prominently
-- Mention on-site service for Malaysia & Singapore customers
-- Reference SIRIM certification naturally
-- Highlight DC motor energy efficiency
-- DO NOT use overly formal/business language — keep it conversational and warm
-- DO NOT make up specific discounts/prices unless the user provides them
-- Mix Chinese and English naturally, like a real Malaysian social media post
-- Each post should feel unique, not a template`;
+// System prompt built by lib/copywriting.js which is always imported.
+// The old hardcoded SYSTEM_PROMPT was removed — all paths now use
+// buildCopywritingPrompt() from lib/copywriting.js for unified brand voice.
 
 // ============================================
 // OpenRouter API helper (fetch, no SDK)
@@ -258,54 +211,32 @@ async function callOpenRouter(messages) {
 }
 
 // ============================================
-// Generate marketing content
+// Generate marketing content — UNIFIED via lib/copywriting.js
 // ============================================
 async function generateContent(command, userText) {
-  const productContext = `AVAILABLE PRODUCTS:\n${buildProductContext()}`;
+  // Map command to pillar
+  const pillarMap = { product: 'product', case: 'case', promo: 'promo', story: 'story' };
+  const pillar = pillarMap[command] || 'product';
 
-  let prompt = '';
+  // Build topic with sensible defaults per pillar
+  const topic = userText || ({
+    product: 'Showcase our ceiling fan collection',
+    case: 'Real customer installation — Malaysian home transformation',
+    promo: 'Current promotion',
+    story: 'Fanz brand story — 10 years of quality and trust',
+  }[command] || 'Product promotion');
 
-  switch (command) {
-    case 'product':
-      if (userText) {
-        prompt = `Generate social media content for product promotion.\n\nProduct brief from user: "${userText}"\n\nReference our product range and brand identity to create a compelling post.\n\n${productContext}`;
-      } else {
-        prompt = `Generate a general product showcase social media post. Highlight our product range and what makes Fanz special.\n\n${productContext}`;
-      }
-      break;
+  // Build system prompt from the shared copywriting module
+  const systemPrompt = buildCopywritingPrompt(topic, pillar);
 
-    case 'case':
-      if (userText) {
-        prompt = `Generate a customer installation case study / testimonial style post.\n\nAdditional context: "${userText}"\n\nCreate a post that feels like a real customer story — build trust through social proof.\n\n${productContext}`;
-      } else {
-        prompt = `Generate a customer installation story post. Describe a realistic scenario where a Malaysian family chose Fanz and enjoys the benefits (quiet, energy saving, reliable). Build trust through storytelling.\n\n${productContext}`;
-      }
-      break;
-
-    case 'promo':
-      if (userText) {
-        prompt = `Generate a promotion / campaign social media post.\n\nPromotion details: "${userText}"\n\nCreate excitement and urgency while maintaining brand trust.\n\n${productContext}`;
-      } else {
-        prompt = `Generate a general promotional post. Create a compelling offer-oriented post that drives engagement. Include a natural call-to-action.\n\n${productContext}`;
-      }
-      break;
-
-    case 'story':
-      if (userText) {
-        prompt = `Generate a brand story social media post.\n\nStory context: "${userText}"\n\nTell Fanz's story in an authentic way — our journey, our commitment to quality, our promise to customers.\n\n${productContext}`;
-      } else {
-        prompt = `Generate a brand story post. Tell the story of Fanz — over 10 years serving Malaysian homes, our commitment to quality (SIRIM certified), 10-year warranty promise, and door-to-door service. Make it heartfelt and authentic.\n\n${productContext}`;
-      }
-      break;
-
-    default:
-      // Free input treated as product promotion with the text as brief
-      prompt = `Generate social media content based on this user message. Treat it as a product promotion brief.\n\nUser: "${userText || 'Generate a general product post'}"\n\n${productContext}`;
-  }
+  // User message — short, just the brief
+  const userPrompt = userText
+    ? `Generate the post based on this brief: "${userText}"`
+    : 'Generate the post.';
 
   const messages = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: prompt }
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
   ];
 
   return await callOpenRouter(messages);

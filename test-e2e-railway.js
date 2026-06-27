@@ -82,8 +82,9 @@ async function step2_content(plans) {
   console.log(`Selected: #${plan.number} "${plan.title}" (${plan.direction})`);
   const { products } = require('./products');
   const pc = products.map(p => `- ${p.name}: ${p.descriptionZh || p.description}`).join('\n');
-  const sysPrompt = `You are a professional social media marketing copywriter for Fanz Sdn Bhd, a Malaysian fan brand. Mix Chinese and English naturally. Always highlight 10-year warranty, SIRIM, on-site service, DC motor. Output: 📱 FACEBOOK VERSION, 📸 INSTAGRAM VERSION, #⃣ HASHTAGS, 🖼️ IMAGE SUGGESTIONS.`;
-  const userMsg = `Generate ${plan.direction} content for: "${plan.title}"\n\nPRODUCTS:\n${pc}`;
+  const { buildCopywritingPrompt } = require('./lib/copywriting');
+  const sysPrompt = buildCopywritingPrompt(plan.title, plan.direction);
+  const userMsg = `Generate the post based on this brief: "${plan.title}"`;
   const raw = await callOpenRouter([{ role: 'system', content: sysPrompt }, { role: 'user', content: userMsg }]);
   console.log('\n[LLM RAW] length=' + raw.length + '\n' + raw);
   const coherence = raw.toLowerCase().includes(plan.title.toLowerCase().replace(/[""]/g, '').substring(0, 8));

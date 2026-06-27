@@ -228,7 +228,7 @@ async function step4_to_pending_review(row, copyResult) {
 async function step5_reject_with_notes(row) {
   sep('STEP 5: Reject with review_notes → verify DB persistence');
 
-  const REJECT_NOTES = "需要中英混杂更自然一些，不要太多英文，FB 版本加一点 emoji";
+  const REJECT_NOTES = "Make the FB version shorter and more rhythmic, like 'Simple design. Strong airflow.' Add website CTA at the end.";
 
   console.log(`[DB] Rejecting with review_notes: "${REJECT_NOTES}"`);
   const rejectPayload = buildRejectPayload(REJECT_NOTES);
