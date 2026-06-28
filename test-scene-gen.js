@@ -284,10 +284,10 @@ try {
 }
 
 // ──────────────────────────────────────────
-// 10. 超时保护配置正确（AbortController 90s）
-console.log('Test 10: Timeout protection — API_TIMEOUT_MS is 90s');
+// 10. 超时保护配置正确（AbortController 150s）
+console.log('Test 10: Timeout protection — API_TIMEOUT_MS is 150s');
 try {
-  assert.strictEqual(sceneGen.API_TIMEOUT_MS, 90_000, 'API_TIMEOUT_MS should be 90,000ms');
+  assert.strictEqual(sceneGen.API_TIMEOUT_MS, 150_000, 'API_TIMEOUT_MS should be 150,000ms');
   console.log('  PASS');
 } catch (e) {
   fail(e.message);
