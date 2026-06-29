@@ -105,8 +105,10 @@ const awaitingMonthEdits = new Map();
 const awaitingMonthRemoves = new Map();
 
 // Map<chatId, { rowId, planId }> — set when user clicks "batch_reject" on a batch review card,
-// cleared after their next text message is consumed as the revision note.
+// cleared when user sends revision notes or session expires.
 const awaitingBatchReviewNotes = new Map();
+// Map<calId, planId> — stores planId for batch review buttons to stay under Telegram's 64-byte callback_data limit.
+const batchActionMap = new Map();
 
 // Map<chatId, { rowId }> — set when user clicks "Upload Own" on an image review card,
 // cleared after their next photo is received and processed.
@@ -953,17 +955,19 @@ async function sendBatchReviewMessage(chatId, planId) {
     const label = `${statusBadge} ${shortTopic}`;
 
     if (row.status === 'copy_approved') {
-      keyboard.push([{ text: `✅ ${shortTopic} — Approved`, callback_data: `batch_noop:${row.id}` }]);
+      keyboard.push([{ text: `✅ ${shortTopic} — Approved`, callback_data: `bn:${row.id}` }]);
     } else {
+      // Store planId in batchActionMap so callback_data stays under 64-byte limit
+      batchActionMap.set(row.id, planId);
       keyboard.push([
-        { text: `✅ Approve: ${shortTopic}`, callback_data: `batch_approve:${row.id}:${planId}` },
-        { text: `✏️ Reject`, callback_data: `batch_reject:${row.id}:${planId}` },
+        { text: `✅ Approve: ${shortTopic}`, callback_data: `ba:${row.id}` },
+        { text: `✏️ Reject`, callback_data: `br:${row.id}` },
       ]);
     }
   }
 
   if (pending > 0) {
-    keyboard.push([{ text: `✅ Approve All Remaining (${pending})`, callback_data: `batch_approve_all:${planId}` }]);
+    keyboard.push([{ text: `✅ Approve All Remaining (${pending})`, callback_data: `baa:${planId}` }]);
   }
 
   // Split message if too long
@@ -1196,7 +1200,7 @@ bot.on('message', async (msg) => {
         {
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🔄 Regenerate with Feedback', callback_data: `batch_regen:${rowId}:${planId}` }],
+              [{ text: '🔄 Regenerate with Feedback', callback_data: `brg:${rowId}` }],
             ],
           },
         }
@@ -2322,17 +2326,16 @@ Requirements:
   // M-4: Batch copy review callbacks
   // ============================================
 
-  // batch_noop:rowId — no-op for already-approved row in batch review
-  if (data.startsWith('batch_noop:')) {
+  // bn:rowId — no-op for already-approved row in batch review
+  if (data.startsWith('bn:')) {
     await bot.answerCallbackQuery(cb.id, { text: 'Already approved.' });
     return;
   }
 
-  // batch_approve:rowId:planId — Approve copy in batch review
-  if (data.startsWith('batch_approve:')) {
-    const parts = data.split(':');
-    const rowId = parts[1];
-    const planId = parts.slice(2).join(':');
+  // ba:rowId — Approve copy in batch review
+  if (data.startsWith('ba:')) {
+    const rowId = data.slice('ba:'.length);
+    const planId = batchActionMap.get(rowId) || '';
     try {
       await supabase.updateContentCalendar(rowId, { status: 'copy_approved' });
       await bot.answerCallbackQuery(cb.id, { text: '✅ Copy approved!' });
@@ -2342,7 +2345,7 @@ Requirements:
       } catch (_) {}
       await sendBatchReviewMessage(chatId, planId);
     } catch (err) {
-      console.error('batch_approve error:', err);
+      console.error('ba: (batch_approve) error:', err);
       try {
         await bot.answerCallbackQuery(cb.id, { text: 'Operation failed. Please try again.' });
       } catch (_) {}
@@ -2350,11 +2353,10 @@ Requirements:
     return;
   }
 
-  // batch_reject:rowId:planId — Reject copy, ask for revision notes
-  if (data.startsWith('batch_reject:')) {
-    const parts = data.split(':');
-    const rowId = parts[1];
-    const planId = parts.slice(2).join(':');
+  // br:rowId — Reject copy, ask for revision notes
+  if (data.startsWith('br:')) {
+    const rowId = data.slice('br:'.length);
+    const planId = batchActionMap.get(rowId) || '';
     try {
       awaitingBatchReviewNotes.set(chatId, { rowId, planId });
       await bot.answerCallbackQuery(cb.id, { text: 'Please send revision notes' });
@@ -2365,7 +2367,7 @@ Requirements:
         reply_markup: { inline_keyboard: [] },
       });
     } catch (err) {
-      console.error('batch_reject error:', err);
+      console.error('br: (batch_reject) error:', err);
       try {
         await bot.answerCallbackQuery(cb.id, { text: 'Operation failed.' });
       } catch (_) {}
@@ -2373,9 +2375,9 @@ Requirements:
     return;
   }
 
-  // batch_approve_all:planId — Approve all remaining copy_done posts
-  if (data.startsWith('batch_approve_all:')) {
-    const planId = data.slice('batch_approve_all:'.length);
+  // baa:planId — Approve all remaining copy_done posts
+  if (data.startsWith('baa:')) {
+    const planId = data.slice('baa:'.length);
     try {
       await bot.answerCallbackQuery(cb.id, { text: 'Approving all remaining...' });
 
@@ -2414,11 +2416,10 @@ Requirements:
     return;
   }
 
-  // batch_regen:rowId:planId — Regenerate copy for a rejected post
-  if (data.startsWith('batch_regen:')) {
-    const parts = data.split(':');
-    const rowId = parts[1];
-    const planId = parts.slice(2).join(':');
+  // brg:rowId — Regenerate copy for a rejected post
+  if (data.startsWith('brg:')) {
+    const rowId = data.slice('brg:'.length);
+    const planId = batchActionMap.get(rowId) || '';
     try {
       await bot.answerCallbackQuery(cb.id, { text: 'Regenerating with feedback...' });
 
@@ -2669,4 +2670,5 @@ module.exports = {
   sendTechnicalFailureNotice,
   triggerImageRegeneration,
   monthActionMap,
+  batchActionMap,
 };
