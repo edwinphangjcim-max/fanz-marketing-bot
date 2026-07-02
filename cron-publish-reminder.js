@@ -85,8 +85,9 @@ async function queryTodayPosts() {
   const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
 
   // Build query: scheduled_date >= today AND scheduled_date < tomorrow AND publish_reminder_sent=false
-  // scheduled_date is timestamptz, so we compare against MYT date range
-  const query = `content_calendar?scheduled_date=gte.${today}T00:00:00%2B08:00&scheduled_date=lt.${tomorrow}T00:00:00%2B08:00&publish_reminder_sent=is.false&order=scheduled_date.asc`;
+  // scheduled_date is timestamptz, so we compare against MYT date range.
+  // status=neq.published — a post already marked published needs no reminder.
+  const query = `content_calendar?scheduled_date=gte.${today}T00:00:00%2B08:00&scheduled_date=lt.${tomorrow}T00:00:00%2B08:00&publish_reminder_sent=is.false&status=neq.published&order=scheduled_date.asc`;
 
   const response = await fetch(`${supabaseUrl}/rest/v1/${query}`, {
     headers: {
@@ -113,13 +114,20 @@ async function markReminderSent(rowId) {
 }
 
 /**
- * Send reminder for all today's posts to a Telegram chat.
- * If bot instance is not available, logs to console.
+ * Send reminder for all today's posts.
+ *
+ * Target chat resolution: explicit chatId argument wins; otherwise each
+ * row's own chat_id is used (rows created via the bot always carry it).
+ *
+ * IMPORTANT: publish_reminder_sent is only marked after a reminder was
+ * actually DELIVERED. Running without a send function (or without any
+ * resolvable chat) logs the pending posts but does NOT consume them —
+ * otherwise a log-only run would silently swallow reminders forever.
  *
  * @param {Function|null} sendMessageFn - Async function (chatId, text, opts)
  * @param {Function|null} sendPhotoFn - Async function (chatId, url, opts)
- * @param {number|string} chatId - Telegram chat ID
- * @returns {Promise<{sent: number, failed: number}>}
+ * @param {number|string|null} chatId - Telegram chat ID override (null = use row.chat_id)
+ * @returns {Promise<{sent: number, failed: number, skipped: number}>}
  */
 async function checkTodayPosts(sendMessageFn, sendPhotoFn, chatId) {
   const rows = await queryTodayPosts();
@@ -127,31 +135,44 @@ async function checkTodayPosts(sendMessageFn, sendPhotoFn, chatId) {
 
   let sent = 0;
   let failed = 0;
+  let skipped = 0;
 
   for (const row of rows) {
     try {
       const { text, imageUrl } = buildReminderMessage(row);
+      const targetChat = chatId || row.chat_id;
 
-      if (sendMessageFn) {
-        if (imageUrl && sendPhotoFn) {
-          // Send as photo with caption if image is available
-          try {
-            await sendPhotoFn(chatId, imageUrl, {
-              caption: text,
-              parse_mode: 'Markdown',
-            });
-          } catch (photoErr) {
-            console.warn(`[cron-reminder] sendPhoto failed for ${row.id}, falling back to text:`, photoErr.message);
-            await sendMessageFn(chatId, text, { parse_mode: 'Markdown' });
-          }
-        } else {
-          await sendMessageFn(chatId, text, { parse_mode: 'Markdown' });
+      if (!sendMessageFn || !targetChat) {
+        // Log-only mode (no bot, or row has no chat) — do NOT mark as sent,
+        // the reminder must fire again when a real sender is available.
+        console.log(`[cron-reminder] Pending (not delivered): ${row.topic}`);
+        console.log(`  Content: ${(row.fb_content || row.ig_content || '').slice(0, 120)}`);
+        console.log(`  Image: ${row.image_url || 'none'}`);
+        skipped++;
+        continue;
+      }
+
+      // Inline "Mark as Published" button. callback_data is 'mp:' + uuid
+      // = 39 bytes, well under Telegram's 64-byte limit.
+      const opts = {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✅ Mark as Published', callback_data: `mp:${row.id}` }],
+          ],
+        },
+      };
+
+      if (imageUrl && sendPhotoFn) {
+        // Send as photo with caption if image is available
+        try {
+          await sendPhotoFn(targetChat, imageUrl, { caption: text, ...opts });
+        } catch (photoErr) {
+          console.warn(`[cron-reminder] sendPhoto failed for ${row.id}, falling back to text:`, photoErr.message);
+          await sendMessageFn(targetChat, text, opts);
         }
       } else {
-        // No bot — just log
-        console.log(`[cron-reminder] Post ready: ${row.topic}`);
-        console.log(`  Content: ${row.fb_content || row.ig_content}`);
-        console.log(`  Image: ${row.image_url || 'none'}`);
+        await sendMessageFn(targetChat, text, opts);
       }
 
       await markReminderSent(row.id);
@@ -163,7 +184,7 @@ async function checkTodayPosts(sendMessageFn, sendPhotoFn, chatId) {
     }
   }
 
-  return { sent, failed };
+  return { sent, failed, skipped };
 }
 
 // ============================================
@@ -175,7 +196,7 @@ if (require.main === module) {
     console.log(`[cron-reminder] Running at ${new Date().toISOString()}`);
     try {
       const result = await checkTodayPosts(null, null, null);
-      console.log(`[cron-reminder] Done: ${result.sent} sent, ${result.failed} failed`);
+      console.log(`[cron-reminder] Done: ${result.sent} sent, ${result.failed} failed, ${result.skipped} pending (log-only run, not consumed)`);
       if (result.failed > 0) process.exit(1);
     } catch (err) {
       console.error('[cron-reminder] Fatal error:', err.message);

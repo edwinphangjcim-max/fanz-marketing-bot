@@ -15,6 +15,7 @@ const { isFestivalPost, getFestiveSceneDescription } = require('./lib/festival-h
 const { schedulePlan, formatScheduleTable } = require('./lib/monthly-scheduler');
 const { checkTodayPosts, buildReminderMessage } = require('./cron-publish-reminder');
 const { classifyIntent } = require('./lib/intent-router');
+const worker = require('./lib/worker');
 
 // ============================================
 // VERSION / GIT COMMIT SHA
@@ -146,6 +147,24 @@ const monthActionMap = new Map();
 // Map<chatId, { rowId }> — set when user clicks "Change Scene" on an image review card,
 // cleared after their next text message is consumed as the new scene description.
 const awaitingSceneChange = new Map();
+
+/**
+ * Resolve the planId for a calendar row.
+ * monthActionMap/batchActionMap are in-memory and lost on restart, so old
+ * inline buttons would resolve to '' and half-fail after a redeploy.
+ * Fallback: the row itself carries plan_id in the DB.
+ */
+async function resolvePlanId(map, rowId) {
+  const cached = map.get(rowId);
+  if (cached) return cached;
+  try {
+    const row = await supabase.getContentCalendar(rowId);
+    return (row && row.plan_id) || '';
+  } catch (err) {
+    console.error(`resolvePlanId: DB fallback failed for ${rowId}:`, err.message);
+    return '';
+  }
+}
 
 function getPlanSession(chatId) {
   const session = planSessions.get(chatId);
@@ -318,6 +337,15 @@ const bot = SKIP_BOT_INIT
 
 if (!SKIP_BOT_INIT) {
   console.log(`Fanz Marketing Bot started. Model: ${MODEL}. Commit: ${COMMIT_SHA}`);
+
+  // Background worker: batch imagery for Dashboard-triggered plans (M-5),
+  // image_retry consumption, auto-scheduling (M-6), daily reminder (M-7).
+  worker.start({
+    sendMessage: (chatId, text, opts) => bot.sendMessage(chatId, text, opts),
+    sendPhoto: (chatId, photo, opts) => bot.sendPhoto(chatId, photo, opts),
+    sendImageReviewCard: (chatId, rowId, imageUrl, status, isDryRun, retryCount) =>
+      sendImageReviewCard(chatId, rowId, imageUrl, status, isDryRun, retryCount),
+  });
 }
 
 // ============================================
@@ -808,9 +836,13 @@ bot.onText(/^\/schedule_month\s+(.+)/is, async (msg, match) => {
   }
 
   try {
-    await bot.sendMessage(chatId, `📅 Scheduling approved posts for plan ${planId.slice(0, 8)}...`);
+    await bot.sendMessage(chatId, `📅 Scheduling posts for plan ${planId.slice(0, 8)}...`);
 
-    const scheduledRows = await schedulePlan(planId);
+    // Manual scheduling accepts any post-copy status — scheduling only
+    // assigns dates. The worker's automatic path uses ['approved'] only.
+    const scheduledRows = await schedulePlan(planId, {
+      statuses: ['approved', 'image_ready', 'image_retry', 'copy_approved'],
+    });
     const table = formatScheduleTable(scheduledRows);
 
     await bot.sendMessage(chatId, table, { parse_mode: 'Markdown' });
@@ -842,11 +874,11 @@ bot.onText(/^\/check_today/i, async (msg) => {
       chatId
     );
 
-    if (result.sent === 0 && result.failed === 0) {
+    if (result.sent === 0 && result.failed === 0 && (result.skipped || 0) === 0) {
       await bot.sendMessage(chatId, '✅ No pending posts for today.');
     } else {
       await bot.sendMessage(chatId,
-`📋 *Check Today Complete*\n\n${result.sent} reminder(s) sent, ${result.failed} failed.`,
+`📋 *Check Today Complete*\n\n${result.sent} reminder(s) sent, ${result.failed} failed, ${result.skipped || 0} skipped (no target chat).`,
         { parse_mode: 'Markdown' }
       );
     }
@@ -1851,7 +1883,7 @@ bot.on('callback_query', async (cb) => {
   // me:calId — Edit topic/angle
   if (data.startsWith('me:')) {
     const calId = data.slice('me:'.length);
-    const planId = monthActionMap.get(calId) || '';
+    const planId = await resolvePlanId(monthActionMap, calId);
     try {
       awaitingMonthEdits.set(chatId, { planId, postId: calId });
       await bot.answerCallbackQuery(cb.id, { text: 'Send the new topic/angle' });
@@ -1874,7 +1906,7 @@ bot.on('callback_query', async (cb) => {
   // mr:postId — Remove post from plan
   if (data.startsWith('mr:')) {
     const postId = data.slice('mr:'.length);
-    const planId = monthActionMap.get(postId) || '';
+    const planId = await resolvePlanId(monthActionMap, postId);
     try {
       // Read the post for confirmation context
       const row = await supabase.getContentCalendar(postId);
@@ -1900,7 +1932,7 @@ bot.on('callback_query', async (cb) => {
   // mrp:calId — Regenerate a single post
   if (data.startsWith('mrp:')) {
     const calId = data.slice('mrp:'.length);
-    const planId = monthActionMap.get(calId) || '';
+    const planId = await resolvePlanId(monthActionMap, calId);
     const postId = calId;
     try {
       await bot.answerCallbackQuery(cb.id, { text: 'Regenerating post...' });
@@ -2358,10 +2390,57 @@ Requirements:
     return;
   }
 
+  // mp:rowId — Mark as Published (from the daily reminder card, M-7)
+  if (data.startsWith('mp:')) {
+    const rowId = data.slice('mp:'.length);
+    try {
+      const row = await supabase.getContentCalendar(rowId);
+      if (!row) {
+        await bot.answerCallbackQuery(cb.id, { text: 'Post not found.' });
+        return;
+      }
+      if (row.status === 'published') {
+        await bot.answerCallbackQuery(cb.id, { text: 'Already marked as published.' });
+        return;
+      }
+      if (row.status !== 'approved') {
+        await bot.answerCallbackQuery(cb.id, { text: `Cannot mark published — status is "${row.status}"` });
+        return;
+      }
+      await supabase.updateContentCalendar(rowId, { status: 'published' });
+      await bot.answerCallbackQuery(cb.id, { text: 'Marked as published!' });
+      try {
+        // Reminder cards can be photo messages (caption) or text messages.
+        const suffix = '\n\n✅ Marked as published';
+        if (message && message.caption !== undefined && message.caption !== null) {
+          await bot.editMessageCaption((message.caption || '') + suffix, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: { inline_keyboard: [] },
+          });
+        } else {
+          await bot.editMessageText(((message && message.text) || '') + suffix, {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: { inline_keyboard: [] },
+          });
+        }
+      } catch (editErr) {
+        console.error('mp: message edit error (status already updated):', editErr.message);
+      }
+    } catch (err) {
+      console.error('mp: (mark published) error:', err);
+      try {
+        await bot.answerCallbackQuery(cb.id, { text: 'Operation failed. Please try again.' });
+      } catch (_) {}
+    }
+    return;
+  }
+
   // ba:rowId — Approve copy in batch review
   if (data.startsWith('ba:')) {
     const rowId = data.slice('ba:'.length);
-    const planId = batchActionMap.get(rowId) || '';
+    const planId = await resolvePlanId(batchActionMap, rowId);
     try {
       await supabase.updateContentCalendar(rowId, { status: 'copy_approved' });
       await bot.answerCallbackQuery(cb.id, { text: '✅ Copy approved!' });
@@ -2382,7 +2461,7 @@ Requirements:
   // br:rowId — Reject copy, ask for revision notes
   if (data.startsWith('br:')) {
     const rowId = data.slice('br:'.length);
-    const planId = batchActionMap.get(rowId) || '';
+    const planId = await resolvePlanId(batchActionMap, rowId);
     try {
       awaitingBatchReviewNotes.set(chatId, { rowId, planId });
       await bot.answerCallbackQuery(cb.id, { text: 'Please send revision notes' });
@@ -2445,7 +2524,7 @@ Requirements:
   // brg:rowId — Regenerate copy for a rejected post
   if (data.startsWith('brg:')) {
     const rowId = data.slice('brg:'.length);
-    const planId = batchActionMap.get(rowId) || '';
+    const planId = await resolvePlanId(batchActionMap, rowId);
     try {
       await bot.answerCallbackQuery(cb.id, { text: 'Regenerating with feedback...' });
 
@@ -2620,26 +2699,23 @@ async function sendTechnicalFailureNotice(chatId, rowId) {
  */
 async function triggerImageRegeneration(rowId, chatId, count) {
   try {
-    const { runImageryPipeline } = require('./lib/pipeline');
-
     const supabase = require('./lib/supabase');
-    const { resetImageStatus } = require('./lib/image-state');
-
-    // Reset image_status to 'generating'
-    await resetImageStatus(rowId);
-
-    // Read row for topic/pillar
     const row = await supabase.getContentCalendar(rowId);
     if (!row) {
       await bot.sendMessage(chatId, '❌ Row not found.');
       return;
     }
 
-    const result = await runImageryPipeline(rowId);
+    // Unified path: worker.processRow handles the shared processing-set
+    // claim, the cross-process image_status claim, review_notes markers
+    // (scene / product-next), fresh regeneration, and failure accounting.
+    const result = await worker.processRow(row, true);
 
     if (result.success) {
       const retryLabel = count ? ` (retry #${count})` : '';
       await sendImageReviewCard(chatId, rowId, result.imageUrl || '(scene)', 'generated' + retryLabel, result.isDryRun, count);
+    } else if (result.contention) {
+      await bot.sendMessage(chatId, '⏳ This image is already being regenerated. The new version will arrive shortly.');
     } else {
       // Still failed
       await sendTechnicalFailureNotice(chatId, rowId);
@@ -2657,6 +2733,7 @@ async function triggerImageRegeneration(rowId, chatId, count) {
 // ============================================
 process.on('SIGINT', () => {
   console.log('\nShutting down...');
+  worker.stop();
   bot.stopPolling();
   httpServer.close();
   process.exit(0);
@@ -2664,6 +2741,7 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
   console.log('\nShutting down...');
+  worker.stop();
   bot.stopPolling();
   httpServer.close();
   process.exit(0);
