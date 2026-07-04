@@ -13,7 +13,13 @@
 //   -> daily reminder (M-7) delivers to row.chat_id and marks sent
 //   -> approved -> published transition (mp: callback equivalent)
 //
-// Run: SKIP! -- source .env first, then: node test-worker-chain.js
+// Run: source .env first, then: node test-worker-chain.js
+//
+// WARNING: do NOT run while any REAL plan is in_production on the shared
+// DB — worker.tick() scans in_production plans globally, so this dry-run
+// process could claim real rows and stamp them with placeholder images
+// (and the deployed worker could equally claim this test's rows).
+// Check first: content_plans where status='in_production'.
 // ============================================
 
 process.env.OPENAI_API_KEY = ''; // force dry-run imagery
