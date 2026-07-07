@@ -7,7 +7,13 @@ const supabase = require('./lib/supabase');
 const supabasePlans = require('./lib/supabase-plans');
 const { buildPlanSystemPrompt, parsePlanResponse, validateSelection, createSelectionPayload } = require('./lib/planning');
 const { buildCopywritingPrompt, parseCopywritingResponse, validateCopywritingResult } = require('./lib/copywriting');
+const brandKitData = require('./lib/brand');
 const { publishToSocial } = require('./lib/publish');
+
+/** Brand voice from the Brand Kit (cached, non-throwing) → copywriting prompt. */
+async function brandVoice() {
+  try { return (await brandKitData.getBrandKit()).brand_voice || null; } catch { return null; }
+}
 const { buildMonthlySystemPrompt, parseTargetMonth } = require('./lib/monthly-planning');
 const { parseAndValidateMonthlyPlan, mapPillarForDB } = require('./lib/monthly-plan-parser');
 const { isFestivalPost, getFestiveSceneDescription } = require('./lib/festival-handler');
@@ -310,7 +316,7 @@ async function generateContent(command, userText) {
   }[command] || 'Product promotion');
 
   // Build system prompt from the shared copywriting module
-  const systemPrompt = buildCopywritingPrompt(topic, pillar);
+  const systemPrompt = buildCopywritingPrompt(topic, pillar, undefined, await brandVoice());
 
   // User message — short, just the brief
   const userPrompt = userText
@@ -919,7 +925,7 @@ async function batchGenerateContent(chatId, planId) {
   for (let i = 0; i < approvedRows.length; i++) {
     const row = approvedRows[i];
     try {
-      const prompt = buildCopywritingPrompt(row.topic, row.pillar);
+      const prompt = buildCopywritingPrompt(row.topic, row.pillar, undefined, await brandVoice());
       const raw = await callOpenRouter([
         { role: 'system', content: prompt },
         { role: 'user', content: `Generate social media content for this Fanz topic: "${row.topic}". Pillar: ${row.pillar}.` },
@@ -1163,7 +1169,7 @@ bot.on('message', async (msg) => {
     // Falls through silently on failure; the user still receives the generateContent output.
     if (createdRow && createdRow.id) {
       try {
-        const copywritingPrompt = buildCopywritingPrompt(plan.title, plan.direction);
+        const copywritingPrompt = buildCopywritingPrompt(plan.title, plan.direction, undefined, await brandVoice());
         const copyRaw = await callOpenRouter([
           { role: 'system', content: copywritingPrompt },
           { role: 'user', content: `Generate social media content for this Fanz topic.` },
@@ -2309,7 +2315,7 @@ Requirements:
       const pillar = row.pillar || 'product';
       const reviewNotes = (row.review_notes || '').trim() || null;
 
-      const copywritingPrompt = buildCopywritingPrompt(topic, pillar, reviewNotes);
+      const copywritingPrompt = buildCopywritingPrompt(topic, pillar, reviewNotes, await brandVoice());
       const copyRaw = await callOpenRouter([
         { role: 'system', content: copywritingPrompt },
         { role: 'user', content: 'Generate social media content for this Fanz topic, incorporating the revision feedback.' },
@@ -2521,7 +2527,7 @@ Requirements:
       const pillar = row.pillar || 'product';
       const reviewNotes = (row.review_notes || '').trim() || null;
 
-      const prompt = buildCopywritingPrompt(topic, pillar, reviewNotes);
+      const prompt = buildCopywritingPrompt(topic, pillar, reviewNotes, await brandVoice());
       const raw = await callOpenRouter([
         { role: 'system', content: prompt },
         { role: 'user', content: 'Generate social media content for this Fanz topic, incorporating the revision feedback.' },
