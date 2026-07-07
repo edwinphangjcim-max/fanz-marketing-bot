@@ -83,15 +83,18 @@ function fail(msg) {
     assert.ok(idxContent.includes('sendMessage'), 'sendMessage should exist (fallback)');
     console.log('  PASS');
 
-    // Test 8: Dashboard image-review handles approve/reject/skip
-    console.log('Test 8: Dashboard image-review handles approve/reject/skip');
+    // Test 8: Dashboard image-review exposes the current action set
+    // (旧断言找 'reject'——六出口版路由从未有过该 action，属过时期望)
+    console.log('Test 8: Dashboard image-review handles the six-exit actions');
     const dashRoute = fs.readFileSync(
       path.resolve(__dirname, '..', 'fanz-dashboard', 'app', 'api', 'marketing', 'image-review', 'route.js'),
       'utf8'
     );
-    assert.ok(dashRoute.includes("'approve'") && dashRoute.includes("'reject'") && dashRoute.includes("'skip'"));
+    for (const a of ["'approve'", "'regenerate'", "'change_scene'", "'change_product'", "'edit_compose'", "'skip'"]) {
+      assert.ok(dashRoute.includes(a), `action ${a} missing from image-review route`);
+    }
     assert.ok(dashRoute.includes("'image_ready'"));
-    console.log('  PASS (approve/reject/skip all present)');
+    console.log('  PASS (all current actions present)');
   } catch (e) {
     fail(e.message);
   }
