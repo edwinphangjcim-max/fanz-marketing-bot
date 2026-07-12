@@ -86,4 +86,38 @@ const products = [
   },
 ];
 
-module.exports = { brand, products };
+// ============================================
+// 型号族参考（来自 27 张真实经销商发票，2026-07-08）
+// 归一化用：变体写法 → 规范型号族 → 品牌。零客户 PII。
+// 完整归一化表见 fanz-customer-service-bot/docs/model-normalization.md
+// brand: 'fanz'（马达 10 年）| 'vioz'（Fanz 低价子线，马达 5 年，待最终确认）
+// ============================================
+const modelFamilies = [
+  // ── Fanz 主线（10 年）──
+  { family: "FS", brand: "fanz", sizes: ['42"', '48"', '52"', '56"'], variants: ["FS 423 N", "FS 423L", "FANZ-FS 423-L", "FS 563 N", "FS 563L", "FANZ-FS 48-L", "FS525N", "FANZ-FS525N"], note: "遥控 LED 吊扇，主力" },
+  { family: "Grande", brand: "fanz", sizes: ['52"'], variants: ["Grande L Series", "FANZ-GRANDE 523-L", "Grande 525L"], note: "Smart LED RC v2" },
+  { family: "Aura", brand: "fanz", sizes: ['36"', '48"'], variants: ["AURA Series", "FANZ-AURA 36L", "FANZ-AURA 48L", 'FANZ-48"-AURA'], note: "Smart WiFi + LED" },
+  { family: "Inno", brand: "fanz", sizes: [], variants: ["FANZ INNO 435 L", "FANZ-INNO 435-L"], note: "Smart LED RC v2" },
+  { family: "Eco", brand: "fanz", sizes: [], variants: ["Fanz Eco 435L"], note: "早期型号" },
+  { family: "Axel", brand: "fanz", sizes: ['16"'], variants: ["SERIE AXEL-PINEWOOD", "Fanz-Fanzo-Axel", "AXEL-16"], note: "含吊扇+壁扇" },
+  { family: "Gaze", brand: "fanz", sizes: ['66"'], variants: ["GAZE-66N-MB"], note: '66" 3 叶 DC' },
+  { family: "Spinor", brand: "fanz", sizes: [], variants: ["FANZ-SPINOR"], note: "角扇" },
+  { family: "V605", brand: "fanz", sizes: [], variants: ["V605"], note: "主线型号 Matt Black（非 Vioz）" },
+  { family: "Smart", brand: "fanz", sizes: [], variants: ["Smart Series"], note: "通用智能款" },
+  // ── Vioz 子线（5 年，待确认）──
+  { family: "Vioz Windy", brand: "vioz", sizes: ['42"', '56"'], variants: ["VIOZ WINDY MK II", "WINDY-56-MK2", "VIOZ-WINDY", "MK11 56 MB"], note: "MK II，DC 5 叶，RM139–175" },
+  { family: "Vioz Vetta", brand: "vioz", sizes: ['56"'], variants: ["VIOZ-VETTA", "VETTA-56N"], note: "Oak+MB" },
+  { family: "Vioz CF16", brand: "vioz", sizes: [], variants: ["FANZ-VIOZ CF16"], note: "角扇" },
+  { family: "Vioz FF565", brand: "vioz", sizes: [], variants: ["FZ-VIOZ C/FAN FF 565"], note: "" },
+];
+
+// 颜色代号归一化
+const colorAliases = {
+  bk: "Black", black: "Black",
+  oak: "Oakwood", oakwood: "Oakwood", mahogany: "Oakwood",
+  pw: "Pinewood", pinewood: "Pinewood",
+  mw: "Matt White", "matt white": "Matt White",
+  mb: "Matt Black", mbk: "Matt Black", "matt black": "Matt Black", "matte black": "Matt Black",
+};
+
+module.exports = { brand, products, modelFamilies, colorAliases };

@@ -20,7 +20,10 @@ const { isFestivalPost, getFestiveSceneDescription } = require('./lib/festival-h
 const { schedulePlan, formatScheduleTable } = require('./lib/monthly-scheduler');
 const { checkTodayPosts, buildReminderMessage } = require('./cron-publish-reminder');
 const { classifyIntent } = require('./lib/intent-router');
+const mark = require('./lib/mark');
 const worker = require('./lib/worker');
+
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://fanz-dashboard.vercel.app';
 
 // ============================================
 // VERSION / GIT COMMIT SHA
@@ -1109,6 +1112,81 @@ bot.onText(/^\/story\b(.*)/is, async (msg, match) => {
 // ============================================
 // TEXT MESSAGE HANDLER
 // ============================================
+// ── Mark（专属 marketing manager）：单篇草稿状态与流程辅助 ──────
+const pendingTitleDrafts = new Map(); // chatId -> title_draft data from Mark
+
+function buildMarkDraftKeyboard() {
+  return { inline_keyboard: [[
+    { text: 'Approve title', callback_data: 'mk_ok' },
+    { text: 'Another angle', callback_data: 'mk_re' },
+  ]] };
+}
+
+function buildTitleDraftCard(d) {
+  const lines = [
+    'Proposed post',
+    `Title: ${d.title}`,
+    `Type: ${d.pillar || 'product'}${d.product ? ` | Product: ${d.product}` : ''}`,
+    `Angle: ${d.angle || '-'}`,
+  ];
+  if (d.suggested_date) lines.push(`Date: ${d.suggested_date}`);
+  return lines.join('\n');
+}
+
+// 单篇流：建 calendar 行 → 现有 copywriting 管线 → 现有审批卡。
+// 之后的 approve 按钮（review_approve）沿用现有出图链路，零新机制。
+async function runSinglePostFromDraft(chatId, draft) {
+  const row = await supabase.createContentCalendar({
+    chat_id: String(chatId),
+    pillar: mapPillarForDB(draft.pillar || 'product'),
+    topic: draft.title,
+    post_angle: draft.angle || null,
+    suggested_date: draft.suggested_date || null,
+    status: 'selected',
+  });
+  const prompt = buildCopywritingPrompt(draft.title, draft.pillar, undefined, await brandVoice());
+  const rawCopy = await callOpenRouter([
+    { role: 'system', content: prompt },
+    { role: 'user', content: 'Generate social media content for this Fanz topic.' },
+  ]);
+  const parsed = parseCopywritingResponse(rawCopy);
+  if (!parsed) throw new Error('copywriting parse failed');
+  const validation = validateCopywritingResult(parsed);
+  if (!validation.valid) throw new Error(`copywriting invalid: ${validation.errors.join('; ')}`);
+  await supabase.updateContentCalendar(row.id, {
+    fb_content: parsed.fb_content,
+    ig_content: parsed.ig_content,
+    hashtags: parsed.hashtags,
+    status: 'copy_done',
+  });
+  const reviewMsg = buildReviewMessage(parsed, { title: draft.title, direction: draft.pillar });
+  await bot.sendMessage(chatId, reviewMsg, { parse_mode: 'Markdown', reply_markup: buildReviewKeyboard(row.id) });
+  await supabase.updateContentCalendar(row.id, { status: 'pending_review' });
+  mark.setActiveRow(chatId, row.id);
+  mark.markNote(chatId, `[system note: full copy for "${draft.title}" was sent to the user for button review (calendar row ${row.id}). If the user pastes an edited version, summarise the change, ask them to confirm final, then output set_copy. Do not re-send the copy yourself.]`);
+  return row;
+}
+
+// 用户粘贴修改稿并向 Mark 确认终版后落库（FB 文案），重发审批卡。
+async function applyPastedCopy(chatId) {
+  const rowId = mark.getActiveRow(chatId);
+  const paste = mark.getLastPaste(chatId);
+  if (!rowId || !paste) {
+    await bot.sendMessage(chatId, 'I could not find the edited version — please paste the full final copy again.');
+    return;
+  }
+  const row = await supabase.getContentCalendar(rowId);
+  await supabase.updateContentCalendar(rowId, { fb_content: paste });
+  const parsed = {
+    fb_content: paste,
+    ig_content: (row && row.ig_content) || '',
+    hashtags: (row && row.hashtags) || '',
+  };
+  const reviewMsg = buildReviewMessage(parsed, { title: (row && row.topic) || 'Updated copy', direction: (row && row.pillar) || '' });
+  await bot.sendMessage(chatId, reviewMsg, { parse_mode: 'Markdown', reply_markup: buildReviewKeyboard(rowId) });
+  mark.markNote(chatId, `[system note: pasted final copy saved to row ${rowId} (FB content updated; IG unchanged) and re-sent for button approval.]`);
+}
+
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -1450,7 +1528,42 @@ bot.on('message', async (msg) => {
   // Skip commands (already handled above)
   if (text && text.startsWith('/')) return;
 
-  // === FREE TEXT — ROUTE THROUGH INTENT CLASSIFIER ===
+  // === FREE TEXT → MARK（专属 marketing manager，对话式）===
+  // Mark 全面接管自由文本：听懂、追问、出标题草稿（按钮审批）、
+  // 明确要整月才走 /plan_month。下面的旧意图分类路由不再到达（过渡期保留）。
+  try {
+    bot.sendChatAction(chatId, 'typing');
+    if ((text || '').length > 180) mark.setLastPaste(chatId, text);
+    const fromName = msg.from
+      ? [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' ').trim() || msg.from.username || null
+      : null;
+    const turn = await mark.markTurn(chatId, text, {
+      callOpenRouter,
+      productContext: buildProductContext(),
+      brandVoiceText: await brandVoice(),
+      senderName: fromName,
+    });
+    if (turn.clean) await sendWithSplit(chatId, turn.clean);
+    if (turn.action === 'title_draft' && turn.data && turn.data.title) {
+      pendingTitleDrafts.set(chatId, turn.data);
+      await bot.sendMessage(chatId, buildTitleDraftCard(turn.data), { reply_markup: buildMarkDraftKeyboard() });
+    } else if (turn.action === 'plan_month') {
+      // 明确要整月 → 复用现有 /plan_month 命令的完整流程
+      bot.processUpdate({
+        update_id: Date.now(),
+        message: { ...msg, text: '/plan_month', entities: [{ type: 'bot_command', offset: 0, length: 11 }] },
+      });
+    } else if (turn.action === 'set_copy') {
+      await applyPastedCopy(chatId);
+    }
+  } catch (err) {
+    console.error('mark turn error:', err);
+    await bot.sendMessage(chatId, userMessage(err, 'Mark hit a snag — please try again.'));
+  }
+  return;
+
+  // === FREE TEXT — ROUTE THROUGH INTENT CLASSIFIER (legacy, unreachable) ===
+  // eslint-disable-next-line no-unreachable
   try {
     const brandContext = buildProductContext();
     const classification = await classifyIntent(text, brandContext);
@@ -1735,6 +1848,48 @@ bot.on('callback_query', async (cb) => {
   const chatId = message && message.chat && message.chat.id;
   const messageId = message && message.message_id;
 
+  // ── Mark: 单篇标题草稿按钮 ──
+  if (data === 'mk_ok' || data === 'mk_re') {
+    try { await bot.answerCallbackQuery(cb.id); } catch (_) {}
+    const draft = pendingTitleDrafts.get(chatId);
+    if (data === 'mk_ok') {
+      if (!draft) { await bot.sendMessage(chatId, 'That draft has expired — just tell Mark what you need again.'); return; }
+      pendingTitleDrafts.delete(chatId);
+      try {
+        await bot.editMessageText(buildTitleDraftCard(draft) + '\n\nApproved — writing the full copy now...', {
+          chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] },
+        });
+      } catch (_) {}
+      mark.markNote(chatId, `[system note: user approved the title "${draft.title}". The system is generating the full copy and will send it for button review.]`);
+      try {
+        await runSinglePostFromDraft(chatId, draft);
+      } catch (err) {
+        console.error('runSinglePostFromDraft error:', err);
+        await bot.sendMessage(chatId, userMessage(err, 'Something went wrong while writing the copy — ask Mark to try again.'));
+      }
+      return;
+    }
+    // mk_re → 让 Mark 换角度（同一段记忆，Mark 知道上一个草稿是什么）
+    pendingTitleDrafts.delete(chatId);
+    try {
+      const turn = await mark.markTurn(chatId, '(button) I want a different title/angle — propose another one.', {
+        callOpenRouter,
+        productContext: buildProductContext(),
+        brandVoiceText: await brandVoice(),
+        senderName: null,
+      });
+      if (turn.clean) await sendWithSplit(chatId, turn.clean);
+      if (turn.action === 'title_draft' && turn.data && turn.data.title) {
+        pendingTitleDrafts.set(chatId, turn.data);
+        await bot.sendMessage(chatId, buildTitleDraftCard(turn.data), { reply_markup: buildMarkDraftKeyboard() });
+      }
+    } catch (err) {
+      console.error('mk_re error:', err);
+      await bot.sendMessage(chatId, userMessage(err, 'Could not draft another angle — please tell Mark directly.'));
+    }
+    return;
+  }
+
   if (data.startsWith('review_approve:')) {
     const rowId = data.slice('review_approve:'.length);
     try {
@@ -1747,6 +1902,9 @@ bot.on('callback_query', async (cb) => {
         message_id: messageId,
         reply_markup: { inline_keyboard: [] },
       });
+      // Mark 记忆同步 + 给用户 dashboard 链接（Edwin 的对话式流程要求）
+      mark.markNote(chatId, '[system note: user approved the copy via button; the image is being designed now and the dashboard link was sent.]');
+      await bot.sendMessage(chatId, `Image design in progress — view and manage it here: ${DASHBOARD_URL}/marketing/images`);
 
       // Trigger imagery pipeline (I-2 → I-3 → I-4) via orchestrator
       if (supabase.isConfigured()) {
@@ -2764,4 +2922,9 @@ module.exports = {
   triggerImageRegeneration,
   monthActionMap,
   batchActionMap,
+  // Mark（对话式营销经理）— 测试用
+  runSinglePostFromDraft,
+  applyPastedCopy,
+  pendingTitleDrafts,
+  buildTitleDraftCard,
 };
